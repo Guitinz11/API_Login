@@ -39,18 +39,33 @@ userRoutes.post('/cadastro', async (req, res) => {
 userRoutes.put('/:id', async (req, res) => {
     const { id } = req.params;
     const { nome, email, senha, turma } = req.body;
-    const senhaHash2= await bcrypt.hash(senha, 10); 
-    if (!nome || !email || !senha || !turma) {
-        return res.status(400).json({ erro: 'Todos os campos são obrigatórios' });
+    
+    if (!nome || !email || !turma) {
+        return res.status(400).json({ erro: 'Nome, email e turma são obrigatórios' });
     }
 
     try {
-        const [result] = await db.query(
-            'UPDATE users SET nome = ?, email = ?, senha = ?, turma = ? WHERE id_users = ?',
-            [nome, email, senhaHash2, turma, id]
-        );
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ erro: 'Usuário não encontrado' });
+        let senhaHash = null;
+        if (senha) {
+            senhaHash = await bcrypt.hash(senha, 10);
+        }
+
+        if (senhaHash) {
+            const [result] = await db.query(
+                'UPDATE users SET nome = ?, email = ?, senha = ?, turma = ? WHERE id_users = ?',
+                [nome, email, senhaHash, turma, id]
+            );
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ erro: 'Usuário não encontrado' });
+            }
+        } else {
+            const [result] = await db.query(
+                'UPDATE users SET nome = ?, email = ?, turma = ? WHERE id_users = ?',
+                [nome, email, turma, id]
+            );
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ erro: 'Usuário não encontrado' });
+            }
         }
         res.json({ mensagem: 'Usuário atualizado com sucesso' });
     } catch (error) {

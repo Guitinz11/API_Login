@@ -42,23 +42,35 @@ router.post('/cadastro', async (req, res) => {
 router.put('/:id', async (req, res) => {
     const { id } = req.params;
     const { nome, email, senha, turma, equipe } = req.body;
-    const senhaHash2 = await bcrypt.hash(senha, 10);
-    if (!nome || !email || !senha || !turma || !equipe) {
-        return res.status(400).json({ erro: 'Todos os campos são obrigatórios' });
+    
+    if (!nome || !email || !turma || !equipe) {
+        return res.status(400).json({ erro: 'Nome, email, turma e equipe são obrigatórios' });
     }
 
     try {
-        const [result] = await db.query(
-            'UPDATE corredores SET nome = ?, email = ?, senha = ?, turma = ?, equipe = ? WHERE id = ?',
-            [nome, email, senhaHash2, turma, equipe, id]
-        );
-
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ erro: 'Corredor não encontrado' });
+        let senhaHash = null;
+        if (senha) {
+            senhaHash = await bcrypt.hash(senha, 10);
         }
 
+        if (senhaHash) {
+            const [result] = await db.query(
+                'UPDATE corredores SET nome = ?, email = ?, senha = ?, turma = ?, equipe = ? WHERE id_corredores = ?',
+                [nome, email, senhaHash, turma, equipe, id]
+            );
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ erro: 'Corredor não encontrado' });
+            }
+        } else {
+            const [result] = await db.query(
+                'UPDATE corredores SET nome = ?, email = ?, turma = ?, equipe = ? WHERE id_corredores = ?',
+                [nome, email, turma, equipe, id]
+            );
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ erro: 'Corredor não encontrado' });
+            }
+        }
         res.json({ mensagem: 'Corredor atualizado com sucesso' });
-
     } catch (error) {
         res.status(500).json({ erro: error.message });
     }
@@ -68,7 +80,7 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     try {
-        const [result] = await db.query('DELETE FROM corredores WHERE id = ?', [id]);
+        const [result] = await db.query('DELETE FROM corredores WHERE id_corredores = ?', [id]);
         if (result.affectedRows === 0) {
             return res.status(404).json({ erro: 'Corredor não encontrado' });
         }
@@ -79,7 +91,7 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
-const JWT_SECRET = process.env.JWT_SECRET; 
+const JWT_SECRET = process.env.JWT_SECRET || 'sua_chave_secreta_aqui'; 
 
 // LOGIN DO CORREDOR
 router.post('/login', async (req, res) => {
