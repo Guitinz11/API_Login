@@ -9,6 +9,93 @@ function isValidId(id) {
 }
 
 
+// LISTAR VOLTAS
+router.get('/', async (req, res) => {
+    const { corredor_id } = req.query;
+
+    if (corredor_id && !isValidId(corredor_id)) {
+        return res.status(400).json({ erro: 'corredor_id deve ser numérico' });
+    }
+
+    try {
+        const baseQuery = `
+            SELECT 
+                v.id,
+                v.tempo,
+                v.data,
+                c.id_corredores AS id_corredor,
+                c.nome,
+                c.turma,
+                c.equipe
+            FROM voltas v
+            JOIN corredores c ON v.corredor_id = c.id_corredores
+            ${corredor_id ? 'WHERE v.corredor_id = ?' : ''}
+            ORDER BY v.data DESC
+        `;
+
+        const [rows] = corredor_id
+            ? await db.query(baseQuery, [corredor_id])
+            : await db.query(baseQuery);
+
+        res.json(rows || []);
+    } catch (error) {
+        console.error('Erro ao listar voltas:', error.message);
+        res.status(500).json({ erro: 'Erro interno', detalhe: error.message });
+    }
+});
+
+// CRIAR VOLTA
+router.post('/', async (req, res) => {
+    const { corredor_id, tempo, data } = req.body;
+
+    if (!corredor_id || !tempo) {
+        return res.status(400).json({ erro: 'corredor_id e tempo são obrigatórios' });
+    }
+
+    if (!isValidId(corredor_id)) {
+        return res.status(400).json({ erro: 'corredor_id deve ser numérico' });
+    }
+
+    const tempoNumber = Number(tempo);
+    if (Number.isNaN(tempoNumber) || tempoNumber <= 0) {
+        return res.status(400).json({ erro: 'tempo deve ser um número positivo' });
+    }
+
+    try {
+        const [corredorRows] = await db.query('SELECT id_corredores FROM corredores WHERE id_corredores = ?', [corredor_id]);
+        if (!corredorRows || corredorRows.length === 0) {
+            return res.status(404).json({ erro: 'Corredor não encontrado' });
+        }
+
+        const dateValue = data ? new Date(data) : new Date();
+        if (Number.isNaN(dateValue.getTime())) {
+            return res.status(400).json({ erro: 'data inválida' });
+        }
+
+        const formattedDate = dateValue.toISOString().slice(0, 19).replace('T', ' ');
+        const [result] = await db.query(
+            'INSERT INTO voltas (corredor_id, tempo, data) VALUES (?, ?, ?)',
+            [corredor_id, tempoNumber, formattedDate]
+        );
+
+        res.status(201).json({ id: result.insertId, corredor_id, tempo: tempoNumber, data: formattedDate });
+    } catch (error) {
+        console.error('Erro ao criar volta:', error.message);
+        res.status(500).json({ erro: 'Erro interno', detalhe: error.message });
+    }
+});
+
+// LIMPAR TODAS AS VOLTAS
+router.delete('/limpar', async (req, res) => {
+    try {
+        const [result] = await db.query('DELETE FROM voltas');
+        res.json({ message: 'Todas as voltas foram removidas', deletedRows: result.affectedRows });
+    } catch (error) {
+        console.error('Erro ao limpar voltas:', error.message);
+        res.status(500).json({ erro: 'Erro interno', detalhe: error.message });
+    }
+});
+
 // CONTAGEM POR CORREDOR
 router.get('/contagem/:id_corredor', async (req, res) => {
     const { id_corredor } = req.params;
@@ -20,15 +107,15 @@ router.get('/contagem/:id_corredor', async (req, res) => {
     try {
         const [rows] = await db.query(`
             SELECT 
-                c.id AS id_corredor,
+                c.id_corredores AS id_corredor,
                 c.nome,
                 c.turma,
                 c.equipe,
                 COUNT(v.id) AS total_voltas
             FROM corredores c
-            LEFT JOIN voltas v ON v.corredores_id = c.id
-            WHERE c.id = ?
-            GROUP BY c.id, c.nome, c.turma, c.equipe
+            LEFT JOIN voltas v ON v.corredor_id = c.id_corredores
+            WHERE c.id_corredores = ?
+            GROUP BY c.id_corredores, c.nome, c.turma, c.equipe
         `, [id_corredor]);
 
         if (!rows || rows.length === 0) {
@@ -75,12 +162,12 @@ router.get('/melhor-volta-geral', async (req, res) => {
             SELECT 
                 v.tempo, 
                 v.data, 
-                c.id AS id_corredor, 
+                c.id_corredores AS id_corredor, 
                 c.nome, 
                 c.turma,
                 c.equipe
             FROM voltas v
-            JOIN corredores c ON v.corredores_id = c.id
+            JOIN corredores c ON v.corredor_id = c.id_corredores
             ORDER BY v.tempo ASC
             LIMIT 1
         `);
@@ -123,13 +210,13 @@ router.get('/melhor/:id_corredor', async (req, res) => {
             SELECT 
                 v.tempo, 
                 v.data, 
-                c.id AS id_corredor, 
+                c.id_corredores AS id_corredor, 
                 c.nome, 
                 c.turma,
                 c.equipe
             FROM voltas v
-            JOIN corredores c ON v.corredores_id = c.id
-            WHERE c.id = ?
+            JOIN corredores c ON v.corredor_id = c.id_corredores
+            WHERE c.id_corredores = ?
             ORDER BY v.tempo ASC
             LIMIT 1
         `, [id_corredor]);
@@ -164,14 +251,14 @@ router.get('/top5-melhores-voltas', async (req, res) => {
     try {
         const [rows] = await db.query(`
             SELECT 
-                c.id AS id_corredor,
+                c.id_corredores AS id_corredor,
                 c.nome,
                 c.turma,
                 c.equipe,
                 v.tempo,
                 v.data
             FROM voltas v
-            JOIN corredores c ON v.corredores_id = c.id
+            JOIN corredores c ON v.corredor_id = c.id_corredores
             ORDER BY v.tempo ASC
             LIMIT 5
         `);
@@ -204,27 +291,20 @@ router.get('/top5-melhores-voltas', async (req, res) => {
 router.get('/ranking', async (req, res) => {
     try {
         const [rows] = await db.query(`
-            SELECT 
-                c.id AS id_corredor,
+            SELECT
+                c.id_corredores AS id_corredor,
                 c.nome,
                 c.turma,
                 c.equipe,
-                v.tempo AS melhor_volta,
-                v.data AS data_volta
+                COUNT(v.id) AS total_voltas,
+                MIN(v.tempo) AS melhor_volta
             FROM corredores c
-            JOIN voltas v ON v.id = (
-                SELECT id 
-                FROM voltas 
-                WHERE corredores_id = c.id 
-                ORDER BY tempo ASC 
-                LIMIT 1
-            )
-            ORDER BY v.tempo ASC
+            LEFT JOIN voltas v ON v.corredor_id = c.id_corredores
+            GROUP BY c.id_corredores, c.nome, c.turma, c.equipe
+            ORDER BY
+                CASE WHEN MIN(v.tempo) IS NULL THEN 1 ELSE 0 END,
+                MIN(v.tempo) ASC
         `);
-
-        if (!rows || rows.length === 0) {
-            return res.status(404).json({ erro: 'Nenhuma volta registrada' });
-        }
 
         const ranking = rows.map((row, index) => ({
             rank: index + 1,
@@ -232,8 +312,8 @@ router.get('/ranking', async (req, res) => {
             nome: row.nome,
             turma: row.turma,
             equipe: row.equipe,
-            melhor_volta: row.melhor_volta,
-            data_volta: row.data_volta
+            total_voltas: row.total_voltas,
+            melhor_volta: row.melhor_volta
         }));
 
         res.json({ ranking });
