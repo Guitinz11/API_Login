@@ -471,4 +471,185 @@ router.get('/ranking/pistas', async (req, res) => {
     }
 });
 
+// ANALYTICS ADMINISTRATIVO
+router.get('/analytics/admin', async (req, res) => {
+    try {
+        const [laps] = await db.query(`
+            SELECT
+                v.id,
+                v.tempo,
+                v.data,
+                v.pista,
+                c.id_corredores AS id_corredor,
+                c.nome,
+                c.turma,
+                c.equipe
+            FROM voltas v
+            JOIN corredores c ON v.corredor_id = c.id_corredores
+            ORDER BY v.data ASC, v.id ASC
+        `);
+
+        const numericLaps = (laps || []).map(lap => ({
+            ...lap,
+            tempo: Number(lap.tempo || 0),
+            pista: Number(lap.pista || 1)
+        })).filter(lap => lap.tempo > 0);
+
+        if (numericLaps.length === 0) {
+            return res.json({
+                overview: {
+                    total_voltas: 0,
+                    total_pilotos: 0,
+                    total_equipes: 0,
+                    melhor_tempo: null,
+                    pior_tempo: null,
+                    media_geral: 0,
+                    amplitude: 0
+                },
+                byTrack: [],
+                byTeam: [],
+                drivers: [],
+                recentTrend: [],
+                insights: []
+            });
+        }
+
+        const uniqueDrivers = new Set(numericLaps.map(lap => lap.id_corredor));
+        const uniqueTeams = new Set(numericLaps.map(lap => lap.equipe || 'Sem equipe'));
+        const bestLap = numericLaps.reduce((best, lap) => lap.tempo < best.tempo ? lap : best, numericLaps[0]);
+        const worstLap = numericLaps.reduce((worst, lap) => lap.tempo > worst.tempo ? lap : worst, numericLaps[0]);
+        const totalTime = numericLaps.reduce((sum, lap) => sum + lap.tempo, 0);
+        const overallAverage = totalTime / numericLaps.length;
+
+        function summarizeGroup(rows) {
+            const times = rows.map(row => row.tempo);
+            const best = Math.min(...times);
+            const worst = Math.max(...times);
+            const avg = times.reduce((sum, time) => sum + time, 0) / times.length;
+            const variance = times.reduce((sum, time) => sum + Math.pow(time - avg, 2), 0) / times.length;
+            return {
+                total_voltas: rows.length,
+                melhor_tempo: Number(best.toFixed(2)),
+                pior_tempo: Number(worst.toFixed(2)),
+                media: Number(avg.toFixed(2)),
+                amplitude: Number((worst - best).toFixed(2)),
+                consistencia: Number(Math.sqrt(variance).toFixed(2))
+            };
+        }
+
+        function groupBy(rows, keyFn) {
+            return rows.reduce((acc, row) => {
+                const key = keyFn(row);
+                if (!acc[key]) acc[key] = [];
+                acc[key].push(row);
+                return acc;
+            }, {});
+        }
+
+        const byTrack = Object.entries(groupBy(numericLaps, lap => lap.pista))
+            .map(([pista, rows]) => ({
+                pista: Number(pista),
+                ...summarizeGroup(rows),
+                diferenca_para_melhor_geral: Number((Math.min(...rows.map(row => row.tempo)) - bestLap.tempo).toFixed(2))
+            }))
+            .sort((a, b) => a.pista - b.pista);
+
+        const byTeam = Object.entries(groupBy(numericLaps, lap => lap.equipe || 'Sem equipe'))
+            .map(([equipe, rows]) => ({
+                equipe,
+                pilotos: new Set(rows.map(row => row.id_corredor)).size,
+                ...summarizeGroup(rows),
+                diferenca_para_melhor_geral: Number((Math.min(...rows.map(row => row.tempo)) - bestLap.tempo).toFixed(2))
+            }))
+            .sort((a, b) => a.media - b.media);
+
+        const drivers = Object.entries(groupBy(numericLaps, lap => lap.id_corredor))
+            .map(([, rows]) => {
+                const ordered = [...rows].sort((a, b) => new Date(a.data) - new Date(b.data) || a.id - b.id);
+                const first = ordered[0];
+                const last = ordered[ordered.length - 1];
+                const summary = summarizeGroup(rows);
+                return {
+                    id_corredor: first.id_corredor,
+                    nome: first.nome,
+                    turma: first.turma,
+                    equipe: first.equipe,
+                    ...summary,
+                    diferenca_para_melhor_geral: Number((summary.melhor_tempo - bestLap.tempo).toFixed(2)),
+                    evolucao: Number((first.tempo - last.tempo).toFixed(2)),
+                    tendencia: first.tempo > last.tempo ? 'melhorando' : first.tempo < last.tempo ? 'piorando' : 'estavel'
+                };
+            })
+            .sort((a, b) => a.melhor_tempo - b.melhor_tempo);
+
+        const recentTrend = numericLaps.slice(-20).map((lap, index) => ({
+            ordem: index + 1,
+            id: lap.id,
+            tempo: lap.tempo,
+            pista: lap.pista,
+            corredor: lap.nome,
+            equipe: lap.equipe,
+            data: lap.data
+        }));
+
+        const mostConsistent = [...drivers].filter(driver => driver.total_voltas > 1).sort((a, b) => a.consistencia - b.consistencia)[0];
+        const biggestImprovement = [...drivers].filter(driver => driver.total_voltas > 1).sort((a, b) => b.evolucao - a.evolucao)[0];
+        const slowestTrack = [...byTrack].sort((a, b) => b.media - a.media)[0];
+        const fastestTeam = byTeam[0];
+
+        const insights = [
+            {
+                titulo: 'Melhor volta registrada',
+                valor: `${bestLap.tempo.toFixed(2)}s`,
+                detalhe: `${bestLap.nome} - Pista ${bestLap.pista}. Referencia para comparar diferenca de tempo.`
+            },
+            {
+                titulo: 'Maior diferenca entre voltas',
+                valor: `${(worstLap.tempo - bestLap.tempo).toFixed(2)}s`,
+                detalhe: `Entre ${bestLap.nome} (${bestLap.tempo.toFixed(2)}s) e ${worstLap.nome} (${worstLap.tempo.toFixed(2)}s).`
+            },
+            {
+                titulo: 'Pista mais lenta pela media',
+                valor: slowestTrack ? `Pista ${slowestTrack.pista}` : '--',
+                detalhe: slowestTrack ? `Media de ${slowestTrack.media.toFixed(2)}s. Pode indicar curva dificil, atrito ou perda de tracao.` : 'Sem dados.'
+            },
+            {
+                titulo: 'Equipe mais rapida',
+                valor: fastestTeam ? fastestTeam.equipe : '--',
+                detalhe: fastestTeam ? `Media de ${fastestTeam.media.toFixed(2)}s em ${fastestTeam.total_voltas} voltas.` : 'Sem dados.'
+            },
+            {
+                titulo: 'Mais consistente',
+                valor: mostConsistent ? mostConsistent.nome : '--',
+                detalhe: mostConsistent ? `Variacao media de ${mostConsistent.consistencia.toFixed(2)}s. Bom sinal de carrinho equilibrado.` : 'Cadastre mais voltas por piloto.'
+            },
+            {
+                titulo: 'Maior melhora',
+                valor: biggestImprovement ? biggestImprovement.nome : '--',
+                detalhe: biggestImprovement ? `Evoluiu ${biggestImprovement.evolucao.toFixed(2)}s da primeira para a ultima volta.` : 'Cadastre mais voltas por piloto.'
+            }
+        ];
+
+        res.json({
+            overview: {
+                total_voltas: numericLaps.length,
+                total_pilotos: uniqueDrivers.size,
+                total_equipes: uniqueTeams.size,
+                melhor_tempo: Number(bestLap.tempo.toFixed(2)),
+                pior_tempo: Number(worstLap.tempo.toFixed(2)),
+                media_geral: Number(overallAverage.toFixed(2)),
+                amplitude: Number((worstLap.tempo - bestLap.tempo).toFixed(2))
+            },
+            byTrack,
+            byTeam,
+            drivers,
+            recentTrend,
+            insights
+        });
+    } catch (error) {
+        console.error('Erro analytics admin:', error.message);
+        res.status(500).json({ erro: 'Erro interno', detalhe: error.message });
+    }
+});
+
 module.exports = router;
