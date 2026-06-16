@@ -380,7 +380,7 @@ router.get('/ranking', async (req, res) => {
             total_voltas: row.total_voltas,
             tempo_total: Number(row.tempo_total || 0),
             media: Number(row.media || 0),
-            melhor_volta: row.melhor_volta
+            melhor_volta: row.melhor_volta !== null ? Number(row.melhor_volta) : null
         }));
 
         res.json({ ranking });
@@ -459,7 +459,7 @@ router.get('/ranking/pistas', async (req, res) => {
                 total_voltas: row.total_voltas,
                 tempo_total: Number(row.tempo_total || 0),
                 media: Number(row.media || 0),
-                melhor_volta: row.melhor_volta
+                melhor_volta: row.melhor_volta !== null ? Number(row.melhor_volta) : null
             });
             return acc;
         }, {});
