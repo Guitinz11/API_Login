@@ -7,7 +7,9 @@ const jwt = require('jsonwebtoken');
 // LISTAR TODOS OS CORREDORES
 router.get('/', async (req, res) => {
     try {
-        const [corredores] = await db.query('SELECT * FROM corredores');
+        const [corredores] = await db.query(
+            'SELECT id_corredores AS id, nome, email, turma, equipe FROM corredores'
+        );
         res.json(corredores);
     } catch (error) {
         console.error('Erro ao buscar corredores: ', error.message);
@@ -80,6 +82,7 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     try {
+        await db.query('DELETE FROM voltas WHERE corredor_id = ?', [id]);
         const [result] = await db.query('DELETE FROM corredores WHERE id_corredores = ?', [id]);
         if (result.affectedRows === 0) {
             return res.status(404).json({ erro: 'Corredor não encontrado' });
@@ -101,7 +104,10 @@ router.post('/login', async (req, res) => {
     }
 
     try {
-        const [corredores] = await db.query('SELECT * FROM corredores WHERE email = ?', [email]);
+        const [corredores] = await db.query(
+            'SELECT id_corredores AS id, nome, email, senha, turma, equipe FROM corredores WHERE email = ?',
+            [email]
+        );
 
         if (corredores.length === 0) {
             return res.status(404).json({ erro: 'Corredor não encontrado' });
@@ -116,7 +122,7 @@ router.post('/login', async (req, res) => {
 
         const token = jwt.sign(
             {
-                id: corredor.id_corredores, 
+                id: corredor.id, 
                 email: corredor.email
             },
             JWT_SECRET,
@@ -127,7 +133,7 @@ router.post('/login', async (req, res) => {
             message: 'Login realizado com sucesso',
             token,
             corredor: {
-                id: corredor.id_corredores,
+                id: corredor.id,
                 nome: corredor.nome,
                 email: corredor.email
             }

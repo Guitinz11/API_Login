@@ -57,6 +57,7 @@
     `id` INT NOT NULL AUTO_INCREMENT,
     `corredor_id` INT NOT NULL,
     `tempo` DECIMAL(10, 2),
+    `pista` INT NOT NULL DEFAULT 1,
     `data` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),
     INDEX `fk_voltas_corredores_idx` (`corredor_id` ASC) VISIBLE,

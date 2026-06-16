@@ -2,6 +2,30 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
+const sseClients = [];
+
+function broadcastSSE(event, payload) {
+    const message = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+    sseClients.forEach(client => client.write(message));
+}
+
+router.get('/stream', (req, res) => {
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'Access-Control-Allow-Origin': '*'
+    });
+    res.write('retry: 10000\n\n');
+
+    sseClients.push(res);
+    req.on('close', () => {
+        const index = sseClients.indexOf(res);
+        if (index !== -1) {
+            sseClients.splice(index, 1);
+        }
+    });
+});
 
 // 🔹 FUNÇÃO AUXILIAR
 function isValidId(id) {
@@ -23,6 +47,7 @@ router.get('/', async (req, res) => {
                 v.id,
                 v.tempo,
                 v.data,
+                v.pista,
                 c.id_corredores AS id_corredor,
                 c.nome,
                 c.turma,
@@ -46,7 +71,7 @@ router.get('/', async (req, res) => {
 
 // CRIAR VOLTA
 router.post('/', async (req, res) => {
-    const { corredor_id, tempo, data } = req.body;
+    const { corredor_id, tempo, data, pista } = req.body;
 
     if (!corredor_id || !tempo) {
         return res.status(400).json({ erro: 'corredor_id e tempo são obrigatórios' });
@@ -59,6 +84,11 @@ router.post('/', async (req, res) => {
     const tempoNumber = Number(tempo);
     if (Number.isNaN(tempoNumber) || tempoNumber <= 0) {
         return res.status(400).json({ erro: 'tempo deve ser um número positivo' });
+    }
+
+    const pistaNumber = pista !== undefined ? Number(pista) : 1;
+    if (Number.isNaN(pistaNumber) || pistaNumber < 1 || pistaNumber > 8) {
+        return res.status(400).json({ erro: 'pista deve ser um número entre 1 e 8' });
     }
 
     try {
@@ -74,11 +104,20 @@ router.post('/', async (req, res) => {
 
         const formattedDate = dateValue.toISOString().slice(0, 19).replace('T', ' ');
         const [result] = await db.query(
-            'INSERT INTO voltas (corredor_id, tempo, data) VALUES (?, ?, ?)',
-            [corredor_id, tempoNumber, formattedDate]
+            'INSERT INTO voltas (corredor_id, tempo, data, pista) VALUES (?, ?, ?, ?)',
+            [corredor_id, tempoNumber, formattedDate, pistaNumber]
         );
 
-        res.status(201).json({ id: result.insertId, corredor_id, tempo: tempoNumber, data: formattedDate });
+        const createdVolta = {
+            id: result.insertId,
+            corredor_id,
+            tempo: tempoNumber,
+            data: formattedDate,
+            pista: pistaNumber
+        };
+
+        broadcastSSE('nova_volta', createdVolta);
+        res.status(201).json(createdVolta);
     } catch (error) {
         console.error('Erro ao criar volta:', error.message);
         res.status(500).json({ erro: 'Erro interno', detalhe: error.message });
@@ -89,9 +128,32 @@ router.post('/', async (req, res) => {
 router.delete('/limpar', async (req, res) => {
     try {
         const [result] = await db.query('DELETE FROM voltas');
+        broadcastSSE('voltas_limpar', { deletedRows: result.affectedRows });
         res.json({ message: 'Todas as voltas foram removidas', deletedRows: result.affectedRows });
     } catch (error) {
         console.error('Erro ao limpar voltas:', error.message);
+        res.status(500).json({ erro: 'Erro interno', detalhe: error.message });
+    }
+});
+
+// DELETAR VOLTA
+router.delete('/:id', async (req, res) => {
+    const { id } = req.params;
+
+    if (!isValidId(id)) {
+        return res.status(400).json({ erro: 'id deve ser numérico' });
+    }
+
+    try {
+        const [result] = await db.query('DELETE FROM voltas WHERE id = ?', [id]);
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ erro: 'Volta não encontrada' });
+        }
+
+        broadcastSSE('volta_deletada', { id: Number(id) });
+        res.json({ message: 'Volta removida com sucesso', deletedId: Number(id) });
+    } catch (error) {
+        console.error('Erro ao deletar volta:', error.message);
         res.status(500).json({ erro: 'Erro interno', detalhe: error.message });
     }
 });
@@ -297,12 +359,15 @@ router.get('/ranking', async (req, res) => {
                 c.turma,
                 c.equipe,
                 COUNT(v.id) AS total_voltas,
+                SUM(v.tempo) AS tempo_total,
+                AVG(v.tempo) AS media,
                 MIN(v.tempo) AS melhor_volta
             FROM corredores c
             LEFT JOIN voltas v ON v.corredor_id = c.id_corredores
             GROUP BY c.id_corredores, c.nome, c.turma, c.equipe
             ORDER BY
-                CASE WHEN MIN(v.tempo) IS NULL THEN 1 ELSE 0 END,
+                CASE WHEN SUM(v.tempo) IS NULL THEN 1 ELSE 0 END,
+                SUM(v.tempo) ASC,
                 MIN(v.tempo) ASC
         `);
 
@@ -313,6 +378,8 @@ router.get('/ranking', async (req, res) => {
             turma: row.turma,
             equipe: row.equipe,
             total_voltas: row.total_voltas,
+            tempo_total: Number(row.tempo_total || 0),
+            media: Number(row.media || 0),
             melhor_volta: row.melhor_volta
         }));
 
@@ -324,5 +391,84 @@ router.get('/ranking', async (req, res) => {
     }
 });
 
+// RESUMO DE PISTAS
+router.get('/summary', async (req, res) => {
+    try {
+        const [tracks] = await db.query(`
+            SELECT
+                v.pista,
+                COUNT(v.id) AS total_voltas,
+                COALESCE(SUM(v.tempo), 0) AS tempo_total,
+                COALESCE(AVG(v.tempo), 0) AS media
+            FROM voltas v
+            GROUP BY v.pista
+            ORDER BY v.pista ASC
+        `);
+
+        const [overall] = await db.query(`
+            SELECT
+                COUNT(id) AS total_voltas,
+                COALESCE(SUM(tempo), 0) AS tempo_total
+            FROM voltas
+        `);
+
+        res.json({
+            total_voltas: overall[0]?.total_voltas || 0,
+            tempo_total: Number(overall[0]?.tempo_total || 0),
+            tracks: tracks.map(track => ({
+                pista: track.pista,
+                total_voltas: track.total_voltas,
+                tempo_total: Number(track.tempo_total || 0),
+                media: Number(track.media || 0)
+            }))
+        });
+    } catch (error) {
+        console.error('Erro resumo de pistas:', error.message);
+        res.status(500).json({ erro: 'Erro interno', detalhe: error.message });
+    }
+});
+
+// RANKING DE PILOTOS POR PISTA
+router.get('/ranking/pistas', async (req, res) => {
+    try {
+        const [rows] = await db.query(`
+            SELECT
+                v.pista,
+                c.id_corredores AS id_corredor,
+                c.nome,
+                c.turma,
+                c.equipe,
+                COUNT(v.id) AS total_voltas,
+                COALESCE(SUM(v.tempo), 0) AS tempo_total,
+                COALESCE(AVG(v.tempo), 0) AS media,
+                MIN(v.tempo) AS melhor_volta
+            FROM voltas v
+            JOIN corredores c ON v.corredor_id = c.id_corredores
+            GROUP BY v.pista, c.id_corredores, c.nome, c.turma, c.equipe
+            ORDER BY v.pista ASC, tempo_total ASC, total_voltas DESC
+        `);
+
+        const ranking = rows.reduce((acc, row) => {
+            const pista = String(row.pista);
+            if (!acc[pista]) acc[pista] = [];
+            acc[pista].push({
+                id_corredor: row.id_corredor,
+                nome: row.nome,
+                turma: row.turma,
+                equipe: row.equipe,
+                total_voltas: row.total_voltas,
+                tempo_total: Number(row.tempo_total || 0),
+                media: Number(row.media || 0),
+                melhor_volta: row.melhor_volta
+            });
+            return acc;
+        }, {});
+
+        res.json({ ranking });
+    } catch (error) {
+        console.error('Erro ranking por pista:', error.message);
+        res.status(500).json({ erro: 'Erro interno', detalhe: error.message });
+    }
+});
 
 module.exports = router;
