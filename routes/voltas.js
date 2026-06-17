@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../db');
 
 const sseClients = [];
+const MAX_PISTA = 9;
 
 function broadcastSSE(event, payload) {
     const message = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
@@ -87,8 +88,8 @@ router.post('/', async (req, res) => {
     }
 
     const pistaNumber = pista !== undefined ? Number(pista) : 1;
-    if (Number.isNaN(pistaNumber) || pistaNumber < 1 || pistaNumber > 8) {
-        return res.status(400).json({ erro: 'pista deve ser um número entre 1 e 8' });
+    if (Number.isNaN(pistaNumber) || pistaNumber < 1 || pistaNumber > MAX_PISTA) {
+        return res.status(400).json({ erro: `pista deve ser um número entre 1 e ${MAX_PISTA}` });
     }
 
     try {
@@ -467,6 +468,61 @@ router.get('/ranking/pistas', async (req, res) => {
         res.json({ ranking });
     } catch (error) {
         console.error('Erro ranking por pista:', error.message);
+        res.status(500).json({ erro: 'Erro interno', detalhe: error.message });
+    }
+});
+
+// RANKING ESPECIAL DA PISTA 9
+router.get('/ranking/pista-9', async (req, res) => {
+    try {
+        const [rows] = await db.query(`
+            SELECT
+                c.id_corredores AS id_corredor,
+                c.nome,
+                c.turma,
+                c.equipe,
+                COUNT(v.id) AS total_voltas,
+                COALESCE(SUM(v.tempo), 0) AS tempo_total,
+                COALESCE(AVG(v.tempo), 0) AS media,
+                MIN(v.tempo) AS melhor_volta,
+                MAX(v.data) AS ultima_volta
+            FROM voltas v
+            JOIN corredores c ON v.corredor_id = c.id_corredores
+            WHERE v.pista = 9
+            GROUP BY c.id_corredores, c.nome, c.turma, c.equipe
+            ORDER BY melhor_volta ASC, media ASC, total_voltas DESC
+        `);
+
+        const ranking = rows.map((row, index) => {
+            const melhorVolta = row.melhor_volta !== null ? Number(row.melhor_volta) : null;
+            const media = Number(row.media || 0);
+            const totalVoltas = Number(row.total_voltas || 0);
+
+            return {
+                rank: index + 1,
+                id_corredor: row.id_corredor,
+                nome: row.nome,
+                turma: row.turma,
+                equipe: row.equipe,
+                total_voltas: totalVoltas,
+                tempo_total: Number(row.tempo_total || 0),
+                media,
+                melhor_volta: melhorVolta,
+                ultima_volta: row.ultima_volta,
+                indice_especial: melhorVolta !== null
+                    ? Number((melhorVolta + (media * 0.35) - (totalVoltas * 0.08)).toFixed(2))
+                    : null
+            };
+        });
+
+        res.json({
+            pista: 9,
+            nome: 'Pista 9 Especial',
+            criterio: 'Menor melhor volta, menor média e bônus por quantidade de voltas.',
+            ranking
+        });
+    } catch (error) {
+        console.error('Erro ranking especial pista 9:', error.message);
         res.status(500).json({ erro: 'Erro interno', detalhe: error.message });
     }
 });
